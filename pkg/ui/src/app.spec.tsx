@@ -32,8 +32,10 @@ import {
 } from "src/views/databases/containers/databases";
 import { TableMain } from "src/views/databases/containers/tableDetails";
 import { DataDistributionPage } from "src/views/cluster/containers/dataDistribution";
-import { StatementsPage } from "@cockroachlabs/admin-ui-components";
-import { StatementDetails } from "src/views/statements/statementDetails";
+import {
+  StatementsPage,
+  StatementDetails,
+} from "@cockroachlabs/admin-ui-components";
 import Debug from "src/views/reports/containers/debug";
 import { ReduxDebug } from "src/views/reports/containers/redux";
 import { CustomChart } from "src/views/reports/containers/customChart";
@@ -57,7 +59,9 @@ describe("Routing to", () => {
     initialEntries: ["/"],
   });
   const store: Store<AdminUIState, Action> = createAdminUIStore(history);
-  const appWrapper: ReactWrapper = mount(<App history={history} store={store}/>);
+  const appWrapper: ReactWrapper = mount(
+    <App history={history} store={store} />,
+  );
 
   after(() => {
     appWrapper.unmount();
@@ -114,7 +118,9 @@ describe("Routing to", () => {
     });
   });
 
-  { /* time series metrics */}
+  {
+    /* time series metrics */
+  }
   describe("'/metrics' path", () => {
     it("routes to <NodeGraphs> component", () => {
       navigateToPath("/metrics");
@@ -182,7 +188,9 @@ describe("Routing to", () => {
     });
   });
 
-  { /* node details */}
+  {
+    /* node details */
+  }
   describe("'/node' path", () => {
     it("routes to <NodeList> component", () => {
       navigateToPath("/node");
@@ -210,7 +218,9 @@ describe("Routing to", () => {
     });
   });
 
-  { /* events & jobs */}
+  {
+    /* events & jobs */
+  }
   describe("'/events' path", () => {
     it("routes to <EventPageUnconnected> component", () => {
       navigateToPath("/events");
@@ -225,7 +235,9 @@ describe("Routing to", () => {
     });
   });
 
-  { /* databases */}
+  {
+    /* databases */
+  }
   describe("'/databases' path", () => {
     it("routes to <DatabaseTablesList> component", () => {
       navigateToPath("/databases");
@@ -257,7 +269,10 @@ describe("Routing to", () => {
     it("redirected to '/database/:${databaseNameAttr}/table/:${tableNameAttr}'", () => {
       navigateToPath("/databases/database/some-db-name/table/some-table-name");
       const location = history.location;
-      assert.equal(location.pathname, "/database/some-db-name/table/some-table-name");
+      assert.equal(
+        location.pathname,
+        "/database/some-db-name/table/some-table-name",
+      );
     });
   });
 
@@ -292,7 +307,9 @@ describe("Routing to", () => {
     });
   });
 
-  { /* data distribution */}
+  {
+    /* data distribution */
+  }
   describe("'/data-distribution' path", () => {
     it("routes to <DataDistributionPage> component", () => {
       navigateToPath("/data-distribution");
@@ -300,7 +317,9 @@ describe("Routing to", () => {
     });
   });
 
-  { /* statement statistics */}
+  {
+    /* statement statistics */
+  }
   describe("'/statements' path", () => {
     it("routes to <StatementsPage> component", () => {
       navigateToPath("/statements");
@@ -351,7 +370,9 @@ describe("Routing to", () => {
     });
   });
 
-  { /* debug pages */}
+  {
+    /* debug pages */
+  }
   describe("'/debug' path", () => {
     it("routes to <Debug> component", () => {
       navigateToPath("/debug");
@@ -383,7 +404,9 @@ describe("Routing to", () => {
     });
   });
 
-  { /* raft pages */}
+  {
+    /* raft pages */
+  }
   describe("'/raft' path", () => {
     it("routes to <Raft> component", () => {
       navigateToPath("/raft");
@@ -495,7 +518,9 @@ describe("Routing to", () => {
     });
   });
 
-  { /* old route redirects */}
+  {
+    /* old route redirects */
+  }
   describe("'/cluster' path", () => {
     it("redirected to '/metrics/overview/cluster'", () => {
       navigateToPath("/cluster");
@@ -519,7 +544,10 @@ describe("Routing to", () => {
       const nodeIDAttr = 1;
       navigateToPath(`/cluster/node/${nodeIDAttr}/${dashboardNameAttr}`);
       const location = history.location;
-      assert.equal(location.pathname, `/metrics/${dashboardNameAttr}/node/${nodeIDAttr}`);
+      assert.equal(
+        location.pathname,
+        `/metrics/${dashboardNameAttr}/node/${nodeIDAttr}`,
+      );
     });
   });
 

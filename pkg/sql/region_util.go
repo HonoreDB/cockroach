@@ -26,6 +26,8 @@ import (
 	"github.com/gogo/protobuf/proto"
 )
 
+const minNumRegionsForSurviveRegionGoal = 3
+
 type liveClusterRegions map[descpb.RegionName]struct{}
 
 func (s *liveClusterRegions) isActive(region descpb.RegionName) bool {
@@ -116,6 +118,30 @@ func zoneConfigFromRegionConfigForDatabase(
 	}
 }
 
+// zoneConfigFromRegionConfigForPartition generates a desired ZoneConfig based
+// on the region config for the given partition.
+// TODO(#multiregion,aayushshah15): properly configure this for region survivability and leaseholder
+// preferences when new zone configuration parameters merge.
+func zoneConfigFromRegionConfigForPartition(
+	partitionRegion descpb.DatabaseDescriptor_RegionConfig_Region,
+	regionConfig descpb.DatabaseDescriptor_RegionConfig,
+) (*zonepb.ZoneConfig, error) {
+	zc := &zonepb.ZoneConfig{
+		NumReplicas: proto.Int32(zoneConfigNumReplicasFromRegionConfig(regionConfig)),
+		LeasePreferences: []zonepb.LeasePreference{
+			{Constraints: []zonepb.Constraint{makeRequiredZoneConstraintForRegion(partitionRegion.Name)}},
+		},
+	}
+	var err error
+	if zc.Constraints, err = constraintsConjunctionForRegionalLocality(
+		partitionRegion.Name,
+		regionConfig,
+	); err != nil {
+		return nil, err
+	}
+	return zc, err
+}
+
 // zoneConfigNumReplicasFromRegionConfig generates the number of replicas needed given a region config.
 func zoneConfigNumReplicasFromRegionConfig(
 	regionConfig descpb.DatabaseDescriptor_RegionConfig,
@@ -188,10 +214,9 @@ func zoneConfigFromTableLocalityConfig(
 			{Constraints: []zonepb.Constraint{makeRequiredZoneConstraintForRegion(preferredRegion)}},
 		}
 	case *descpb.TableDescriptor_LocalityConfig_RegionalByRow_:
-		// TODO(#multiregion): figure out correct partition/subzone fields to make this work.
-		// We need to fill the table with PARTITION BY to get the ball rolling on this.
-		// For now, return a dummy field for now so that other tests relying on this path of code to
-		// exercise other functionality (i.e. SHOW) pass.
+		// We purposely do not set anything here at table level - this should be done at
+		// partition level instead.
+		return nil, nil
 	}
 	return &ret, nil
 }
@@ -223,17 +248,11 @@ func (p *planner) applyZoneConfigForMultiRegion(
 func (p *planner) applyZoneConfigFromTableLocalityConfig(
 	ctx context.Context,
 	tblName tree.TableName,
-	localityConfig descpb.TableDescriptor_LocalityConfig,
+	desc *descpb.TableDescriptor,
 	regionConfig descpb.DatabaseDescriptor_RegionConfig,
 ) error {
-	localityZoneConfig, err := zoneConfigFromTableLocalityConfig(localityConfig, regionConfig)
-	if err != nil {
-		return err
-	}
-	// If we do not have to configure anything, exit early.
-	if localityZoneConfig == nil {
-		return nil
-	}
+	localityConfig := *desc.LocalityConfig
+
 	// Construct an explicit name so that CONFIGURE ZONE has the fully qualified name.
 	// Without this, the table may fail to resolve.
 	explicitTblName := tree.MakeTableNameWithSchema(
@@ -241,6 +260,64 @@ func (p *planner) applyZoneConfigFromTableLocalityConfig(
 		tblName.SchemaName,
 		tblName.ObjectName,
 	)
+
+	// Apply zone configs for each index partition.
+	// TODO(otan): depending on what we decide for cascading zone configs, some of this
+	// code will have to change.
+	switch localityConfig.Locality.(type) {
+	case *descpb.TableDescriptor_LocalityConfig_RegionalByRow_:
+		for _, region := range regionConfig.Regions {
+			zc, err := zoneConfigFromRegionConfigForPartition(region, regionConfig)
+			if err != nil {
+				return err
+			}
+
+			for _, idx := range desc.Indexes {
+				if err := p.applyZoneConfigForMultiRegion(
+					ctx,
+					tree.ZoneSpecifier{
+						TableOrIndex: tree.TableIndexName{
+							Table: explicitTblName,
+							Index: tree.UnrestrictedName(idx.Name),
+						},
+						Partition: tree.Name(region.Name),
+					},
+					zc,
+					"index-multiregion-set-zone-config",
+				); err != nil {
+					return err
+				}
+			}
+
+			if err := p.applyZoneConfigForMultiRegion(
+				ctx,
+				tree.ZoneSpecifier{
+					TableOrIndex: tree.TableIndexName{
+						Table: explicitTblName,
+						Index: tree.UnrestrictedName(desc.PrimaryIndex.Name),
+					},
+					Partition: tree.Name(region.Name),
+				},
+				zc,
+				"primary-index-multiregion-set-zone-config",
+			); err != nil {
+				return err
+			}
+		}
+	}
+
+	localityZoneConfig, err := zoneConfigFromTableLocalityConfig(
+		localityConfig,
+		regionConfig,
+	)
+	if err != nil {
+		return err
+	}
+	// If we do not have to configure anything, exit early.
+	if localityZoneConfig == nil {
+		return nil
+	}
+
 	return p.applyZoneConfigForMultiRegion(
 		ctx,
 		tree.ZoneSpecifier{TableOrIndex: tree.TableIndexName{Table: explicitTblName}},
@@ -263,6 +340,68 @@ func (p *planner) applyZoneConfigFromDatabaseRegionConfig(
 	)
 }
 
+// updateZoneConfigsForLocalityRegionalByTable loops through all of the tables in the
+// specified database, and refreshes the zone configs for all REGIONAL BY TABLE tables.
+// NOTE: this function uses cached table and schema descriptors. As a result, it may
+// not be safe to run within a schema change.
+func (p *planner) updateZoneConfigsForAllTables(ctx context.Context, desc *dbdesc.Mutable) error {
+	// No work to be done if the database isn't a multi-region database.
+	if !desc.IsMultiRegion() {
+		return nil
+	}
+
+	lookupFlags := p.CommonLookupFlags(true /*required*/)
+	lookupFlags.AvoidCached = false
+	schemas, err := p.Descriptors().GetSchemasForDatabase(ctx, p.txn, desc.GetID())
+	if err != nil {
+		return err
+	}
+
+	// Loop over all schemas, then loop over all tables to find all of the REGIONAL BY
+	// TABLE tables.
+	for _, schema := range schemas {
+		tbNames, err := p.Descriptors().GetObjectNames(
+			ctx,
+			p.txn,
+			desc,
+			schema,
+			tree.DatabaseListFlags{
+				CommonLookupFlags: lookupFlags,
+				ExplicitPrefix:    true,
+			},
+		)
+		if err != nil {
+			return err
+		}
+		lookupFlags.Required = false
+		for i := range tbNames {
+			found, tbDesc, err := p.Descriptors().GetImmutableTableByName(
+				ctx, p.txn, &tbNames[i], tree.ObjectLookupFlags{CommonLookupFlags: lookupFlags},
+			)
+			if err != nil {
+				return err
+			}
+
+			// If we couldn't find the table, or it has no LocalityConfig, there's nothing
+			// to do here.
+			if !found || tbDesc.LocalityConfig == nil {
+				continue
+			}
+
+			// Update the zone configuration
+			if err := p.applyZoneConfigFromTableLocalityConfig(
+				ctx,
+				tbNames[i],
+				tbDesc.TableDesc(),
+				*desc.RegionConfig,
+			); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
+}
+
 // initializeMultiRegionDatabase initializes a multi-region database by creating
 // the multi-region enum and the database-level zone configuration.
 func (p *planner) initializeMultiRegionDatabase(ctx context.Context, desc *dbdesc.Mutable) error {
@@ -276,8 +415,7 @@ func (p *planner) initializeMultiRegionDatabase(ctx context.Context, desc *dbdes
 	for _, region := range desc.RegionConfig.Regions {
 		regionLabels = append(regionLabels, tree.EnumValue(region.Name))
 	}
-	// TODO(#multiregion): See github issue:
-	// https://github.com/cockroachdb/cockroach/issues/56877.
+
 	if err := p.createEnumWithID(
 		p.RunParams(ctx),
 		desc.RegionConfig.RegionEnumID,

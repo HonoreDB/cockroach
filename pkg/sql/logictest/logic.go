@@ -1426,6 +1426,10 @@ func (t *logicTest) newCluster(serverArgs TestServerArgs) {
 				},
 			},
 		}
+
+		// Prevent a logging assertion that the server ID is initialized multiple times.
+		log.TestingClearServerIdentifiers()
+
 		tenant, err := t.cluster.Server(t.nodeIdx).StartTenant(tenantArgs)
 		if err != nil {
 			t.rootT.Fatalf("%+v", err)
@@ -1682,22 +1686,19 @@ func processConfigs(t *testing.T, path string, defaults configSet, configNames [
 		blocklist[blockedConfig] = issueNo
 	}
 
-	var configs configSet
-	if util.IsMetamorphicBuild() {
-		for c := range blocklist {
-			if c == "metamorphic" {
-				// We have a metamorphic build and the file has !metamorphic
-				// blocklist directive which effectively skips the file, so we
-				// simply return empty configSet.
-				return configs
-			}
-		}
+	if _, ok := blocklist["metamorphic"]; ok && util.IsMetamorphicBuild() {
+		// We have a metamorphic build and the file has !metamorphic
+		// blocklist directive which effectively skips the file, so we
+		// simply return empty configSet.
+		t.Logf("will skip test %s because it cannot run in a metamorphic build; pass TAGS=crdb_test_off to disable metamorphic builds", path)
+		return configSet{}
 	}
 	if len(blocklist) != 0 && allConfigNamesAreBlocklistDirectives {
 		// No configs specified, this blocklist applies to the default configs.
 		return applyBlocklistToConfigs(defaults, blocklist)
 	}
 
+	var configs configSet
 	for _, configName := range configNames {
 		if configName[0] == blocklistChar {
 			continue
@@ -3245,9 +3246,14 @@ func RunLogicTestWithDefaultConfig(
 					//  - we're generating testfiles, or
 					//  - we are in race mode (where we can hit a limit on alive
 					//    goroutines).
-					if !*showSQL && !*rewriteResultsInTestfiles && !*rewriteSQL && !util.RaceEnabled {
+					if !*showSQL && !*rewriteResultsInTestfiles && !*rewriteSQL && !util.RaceEnabled && !cfg.useTenant {
 						// Skip parallelizing tests that use the kv-batch-size directive since
 						// the batch size is a global variable.
+						//
+						// We also cannot parallelise tests that use tenant servers
+						// because they change shared state in the logging configuration
+						// and there is an assertion against conflicting changes.
+						//
 						// TODO(jordan, radu): make sqlbase.kvBatchSize non-global to fix this.
 						if filepath.Base(path) != "select_index_span_ranges" {
 							t.Parallel() // SAFE FOR TESTING (this comments satisfies the linter)

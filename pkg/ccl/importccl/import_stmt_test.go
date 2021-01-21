@@ -3511,6 +3511,7 @@ func BenchmarkNodelocalImport(b *testing.B) {
 // BenchmarkUserfileImport-16    	       1	4060204527 ns/op	   6.68 MB/s
 // BenchmarkUserfileImport-16    	       1	4627419761 ns/op	   5.86 MB/s
 func BenchmarkUserfileImport(b *testing.B) {
+	skip.WithIssue(b, 59126)
 	benchUserUpload(b, "userfile://defaultdb.public.root")
 }
 
@@ -6258,6 +6259,7 @@ func TestDisallowsInvalidFormatOptions(t *testing.T) {
 
 func TestImportInTenant(t *testing.T) {
 	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
 
 	ctx := context.Background()
 	baseDir := filepath.Join("testdata")
@@ -6271,6 +6273,9 @@ func TestImportInTenant(t *testing.T) {
 	_, conn10 := serverutils.StartTenant(t, tc.Server(0), base.TestTenantArgs{TenantID: roachpb.MakeTenantID(10)})
 	defer conn10.Close()
 	t10 := sqlutils.MakeSQLRunner(conn10)
+
+	// Prevent a logging assertion that the server ID is initialized multiple times.
+	log.TestingClearServerIdentifiers()
 
 	// Setup a few tenants, each with a different table.
 	_, conn11 := serverutils.StartTenant(t, tc.Server(0), base.TestTenantArgs{TenantID: roachpb.MakeTenantID(11)})

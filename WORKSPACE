@@ -35,6 +35,14 @@ git_repository(
 load("@bazel_gazelle//:deps.bzl", "go_repository")
 
 go_repository(
+    name = "org_golang_x_tools",
+    build_file_proto_mode = "disable_global",
+    importpath = "golang.org/x/tools",
+    sum = "h1:5xKxdl/RhlelmSPaxyVeq5PYSmJ4H14yeQT58qP1F6o=",
+    version = "v0.0.0-20210104081019-d8d6ddbec6ee",
+)
+
+go_repository(
     name = "com_github_gogo_protobuf",
     build_file_proto_mode = "disable_global",
     importpath = "github.com/gogo/protobuf",
@@ -74,6 +82,11 @@ go_rules_dependencies()
 
 go_register_toolchains(go_version = "1.15.6")
 
+# NB: @bazel_skylib comes from go_rules_dependencies().
+load("@bazel_skylib//lib:versions.bzl", "versions")
+
+versions.check(minimum_bazel_version = "3.5.0")
+
 # Load gazelle dependencies.
 load("@bazel_gazelle//:deps.bzl", "gazelle_dependencies")
 
@@ -85,8 +98,8 @@ gazelle_dependencies()
 #      https://github.com/bazelbuild/bazel-gazelle/issues/591
 git_repository(
     name = "com_google_protobuf",
-    commit = "09745575a923640154bcf307fba8aedff47f240a",
-    remote = "https://github.com/protocolbuffers/protobuf",
+    commit = "9b23a34c7275aa0ceb2fc69ed1ae6737b34656a3",
+    remote = "https://github.com/cockroachdb/protobuf",
 )
 
 load("@com_google_protobuf//:protobuf_deps.bzl", "protobuf_deps")
@@ -123,25 +136,3 @@ git_repository(
 load("@rules_foreign_cc//:workspace_definitions.bzl", "rules_foreign_cc_dependencies")
 
 rules_foreign_cc_dependencies()
-
-# Gazelle silently ignores go_repository re-declarations. See
-# https://github.com/bazelbuild/bazel-gazelle/issues/561. What that means for
-# us, given we want to run a custom version of goyacc
-# (https://github.com/cockroachdb/cockroach/pull/57384, sitting under
-# @org_golang_x_tools by default), is that bazel doesn't actually pick it up.
-#
-# TODO(irfansharif): This is a wart that we can remove once
-# https://github.com/golang/tools/pull/259/files is merged upstream. We could
-# also generate a .patch file and apply it directly:
-# https://github.com/bazelbuild/rules_go/blob/0.19.0/go/workspace.rst#overriding-dependencies
-# It is a bit unfortunate though that depending on what the default modules we
-# load above end up loading, we're no longer able to override it with our own
-# fork. We'll need a longer term solution here.
-go_repository(
-    name = "com_github_cockroachdb_tools",
-    build_file_proto_mode = "disable_global",
-    importpath = "golang.org/x/tools",
-    replace = "github.com/cockroachdb/tools",
-    sum = "h1:TZHlzTz/OL/BaGcWzajnqbmf6Tn+399ylrK/at75zXM=",
-    version = "v0.0.0-20201202174556-f18ddc082e74",
-)
