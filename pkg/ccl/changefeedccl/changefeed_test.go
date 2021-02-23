@@ -1101,6 +1101,64 @@ func TestChangefeedColumnFamily(t *testing.T) {
 	t.Run(`enterprise`, enterpriseTest(testFn))
 }
 
+func TestChangefeedAuthorization(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	s, db, _, cleanup := makeSinklessTestServer(t, true)
+	defer cleanup()
+
+	rootDB := sqlutils.MakeSQLRunner(db)
+	rootDB.Exec(t, `create user guest`)
+	rootDB.Exec(t, `create user feedcreator with controlchangefeed`)
+
+	pgURL := url.URL{
+		Scheme:   "postgres",
+		User:     url.User(`guest`),
+		Host:     s.ServingSQLAddr(),
+		RawQuery: "sslmode=disable",
+	}
+
+	db2, err := gosql.Open("postgres", pgURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	guestDB := sqlutils.MakeSQLRunner(db2)
+	defer db2.Close()
+
+	rootDB.Exec(t, `create type type_a as enum ('a');`)
+	rootDB.Exec(t, `create table table_a (id int, type type_a);`)
+	var createChangefeedCmd string
+	if strings.Contains(t.Name(), `enterprise`) {
+		createChangefeedCmd = `CREATE CHANGEFEED FOR d.table_a`
+	} else {
+		createChangefeedCmd = `EXPERIMENTAL CHANGEFEED FOR d.table_a`
+	}
+
+	guestDB.ExpectErr(t, `permission denied to create changefeed`, createChangefeedCmd)
+
+	pgURL = url.URL{
+		Scheme:   "postgres",
+		User:     url.User(`feedcreator`),
+		Host:     s.ServingSQLAddr(),
+		RawQuery: "sslmode=disable",
+	}
+
+	db3, err := gosql.Open("postgres", pgURL.String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	feedCreatorDB := sqlutils.MakeSQLRunner(db3)
+	defer db3.Close()
+
+	feedCreatorDB.ExpectErr(t, `user feedcreator does not have SELECT privilege on relation table_a`, createChangefeedCmd)
+
+	rootDB.Exec(t, `grant select on table table_a to feedcreator;`)
+
+	//success
+	_ = feedCreatorDB.Exec(t, createChangefeedCmd)
+}
+
 func TestChangefeedStopOnSchemaChange(t *testing.T) {
 	defer leaktest.AfterTest(t)()
 	defer log.Scope(t).Close(t)

@@ -246,39 +246,46 @@ func expectResolvedTimestampAvro(
 }
 
 func sinklessTest(testFn func(*testing.T, *gosql.DB, cdctest.TestFeedFactory)) func(*testing.T) {
+	defer changefeedbase.TestingSetDefaultFlushFrequency(testSinkFlushFrequency)()
 	return func(t *testing.T) {
-		defer changefeedbase.TestingSetDefaultFlushFrequency(testSinkFlushFrequency)()
-		ctx := context.Background()
-		knobs := base.TestingKnobs{DistSQL: &execinfra.TestingKnobs{Changefeed: &TestingKnobs{}}}
-		s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
-			Knobs:       knobs,
-			UseDatabase: `d`,
-		})
-		defer s.Stopper().Stop(ctx)
-		sqlDB := sqlutils.MakeSQLRunner(db)
-		sqlDB.Exec(t, `SET CLUSTER SETTING kv.rangefeed.enabled = true`)
-		// TODO(dan): We currently have to set this to an extremely conservative
-		// value because otherwise schema changes become flaky (they don't commit
-		// their txn in time, get pushed by closed timestamps, and retry forever).
-		// This is more likely when the tests run slower (race builds or inside
-		// docker). The conservative value makes our tests take a lot longer,
-		// though. Figure out some way to speed this up.
-		sqlDB.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.target_duration = '1s'`)
-		// TODO(dan): This is still needed to speed up table_history, that should be
-		// moved to RangeFeed as well.
-		sqlDB.Exec(t, `SET CLUSTER SETTING changefeed.experimental_poll_interval = '10ms'`)
-		// Change a couple of settings related to the vectorized engine in
-		// order to ensure that changefeeds work as expected with them (note
-		// that we'll still use the row-by-row engine, see #55605).
-		sqlDB.Exec(t, `SET CLUSTER SETTING sql.defaults.vectorize=on`)
-		sqlDB.Exec(t, `SET CLUSTER SETTING sql.defaults.vectorize_row_count_threshold=0`)
-		sqlDB.Exec(t, `CREATE DATABASE d`)
-
-		sink, cleanup := sqlutils.PGUrl(t, s.ServingSQLAddr(), t.Name(), url.User(security.RootUser))
+		_, db, f, cleanup := makeSinklessTestServer(t, false)
 		defer cleanup()
-		f := cdctest.MakeSinklessFeedFactory(s, sink)
 		testFn(t, db, f)
 	}
+}
+
+func makeSinklessTestServer(
+	t *testing.T, insecure bool,
+) (serverutils.TestServerInterface, *gosql.DB, cdctest.TestFeedFactory, func()) {
+	ctx := context.Background()
+	knobs := base.TestingKnobs{DistSQL: &execinfra.TestingKnobs{Changefeed: &TestingKnobs{}}}
+	s, db, _ := serverutils.StartServer(t, base.TestServerArgs{
+		Knobs:       knobs,
+		UseDatabase: `d`,
+		Insecure:    insecure,
+	})
+	sqlDB := sqlutils.MakeSQLRunner(db)
+	sqlDB.Exec(t, `SET CLUSTER SETTING kv.rangefeed.enabled = true`)
+	// TODO(dan): We currently have to set this to an extremely conservative
+	// value because otherwise schema changes become flaky (they don't commit
+	// their txn in time, get pushed by closed timestamps, and retry forever).
+	// This is more likely when the tests run slower (race builds or inside
+	// docker). The conservative value makes our tests take a lot longer,
+	// though. Figure out some way to speed this up.
+	sqlDB.Exec(t, `SET CLUSTER SETTING kv.closed_timestamp.target_duration = '1s'`)
+	// TODO(dan): This is still needed to speed up table_history, that should be
+	// moved to RangeFeed as well.
+	sqlDB.Exec(t, `SET CLUSTER SETTING changefeed.experimental_poll_interval = '10ms'`)
+	// Change a couple of settings related to the vectorized engine in
+	// order to ensure that changefeeds work as expected with them (note
+	// that we'll still use the row-by-row engine, see #55605).
+	sqlDB.Exec(t, `SET CLUSTER SETTING sql.defaults.vectorize=on`)
+	sqlDB.Exec(t, `SET CLUSTER SETTING sql.defaults.vectorize_row_count_threshold=0`)
+	sqlDB.Exec(t, `CREATE DATABASE d`)
+
+	sink, cleanup := sqlutils.PGUrl(t, s.ServingSQLAddr(), t.Name(), url.User(security.RootUser))
+	f := cdctest.MakeSinklessFeedFactory(s, sink)
+	return s, db, f, func() { cleanup(); s.Stopper().Stop(ctx) }
 }
 
 func enterpriseTest(testFn func(*testing.T, *gosql.DB, cdctest.TestFeedFactory)) func(*testing.T) {
