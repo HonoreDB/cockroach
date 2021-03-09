@@ -348,7 +348,7 @@ func newConfluentAvroEncoder(
 
 // Get the raw SQL-formatted string for a table name
 // and apply full_table_name and avro_schema_prefix options
-func (e *confluentAvroEncoder) rawTableName(desc catalog.TableDescriptor) string {
+func (e *confluentAvroEncoder) disambiguateTableName(desc catalog.TableDescriptor) string {
 	return e.schemaPrefix + e.targets[desc.GetID()].StatementTimeName
 }
 
@@ -359,7 +359,8 @@ func (e *confluentAvroEncoder) EncodeKey(ctx context.Context, row encodeRow) ([]
 	registered, ok := e.keyCache[cacheKey]
 	if !ok {
 		var err error
-		tableName := e.rawTableName(row.tableDesc)
+
+		tableName := e.disambiguateTableName(row.tableDesc)
 		registered.schema, err = indexToAvroSchema(row.tableDesc, row.tableDesc.GetPrimaryIndex().IndexDesc(), tableName, e.schemaPrefix)
 		if err != nil {
 			return nil, err
@@ -420,7 +421,7 @@ func (e *confluentAvroEncoder) EncodeValue(ctx context.Context, row encodeRow) (
 
 		// NB: This uses the kafka name escaper because it has to match the name
 		// of the kafka topic.
-		subject := SQLNameToKafkaName(e.rawTableName(row.tableDesc)) + confluentSubjectSuffixValue
+		subject := SQLNameToKafkaName(e.disambiguateTableName(row.tableDesc)) + confluentSubjectSuffixValue
 		registered.registryID, err = e.register(ctx, &registered.schema.avroRecord, subject)
 		if err != nil {
 			return nil, err

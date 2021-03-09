@@ -1154,13 +1154,13 @@ func TestChangefeedAuthorization(t *testing.T) {
 		// on a non-root user by asserting we get to an unrelated error
 
 		/*
-			        // This could be tested much more cleanly with the below code,
-					// but https://github.com/cockroachdb/cockroach/issues/49313 deeply breaks
-					// all of our cdc test helpers when running as not admin.
-					// TODO(zinger): Give this test a happier ending once #49313 is fixed.
-					nonRootFeedFactory := cdctest.MakeSinklessFeedFactory(f.Server(), feedCreatorPgURL)
-					nonRootFeed := feed(t, nonRootFeedFactory, createChangefeedCmd)
-					closeFeed(t, nonRootFeed)
+			// This could be tested much more cleanly with the below code,
+			// but https://github.com/cockroachdb/cockroach/issues/49313 deeply breaks
+			// all of our cdc test helpers when running as not admin.
+			// TODO(zinger): Give this test a happier ending once #49313 is fixed.
+			nonRootFeedFactory := cdctest.MakeSinklessFeedFactory(f.Server(), feedCreatorPgURL)
+			nonRootFeed := feed(t, nonRootFeedFactory, createChangefeedCmd)
+			closeFeed(t, nonRootFeed)
 		*/
 
 		rootDB.Exec(t, `grant select on table table_a to feedcreator`)
