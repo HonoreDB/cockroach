@@ -336,7 +336,11 @@ func DescriptorsMatchingTargets(
 	// Process all the TABLE requests.
 	// Pulling in a table needs to pull in the underlying database too.
 	alreadyRequestedTables := make(map[descpb.ID]struct{})
-	for _, pattern := range targets.Tables {
+	tablePatterns := targets.Tables
+	for _, indexPattern := range targets.Indexes {
+		tablePatterns = append(tablePatterns, &indexPattern.Table)
+	}
+	for _, pattern := range tablePatterns {
 		var err error
 		pattern, err = pattern.NormalizeTablePattern()
 		if err != nil {
@@ -427,6 +431,15 @@ func DescriptorsMatchingTargets(
 			return ret, errors.Errorf("unknown pattern %T: %+v", pattern, pattern)
 		}
 	}
+
+	/*
+		for _, indexPattern := range targets.Indexes {
+			_, _, tblI, _ := tree.ResolveExisting(ctx, indexPattern.Table.ToUnresolvedObjectName(), resolver, tree.ObjectLookupFlags{}, currentDatabase, searchPath)
+			tblDesc := tblI.(catalog.TableDescriptor)
+			tblDesc.ActiveIndexes()
+
+		}
+	*/
 
 	// Then process the database expansions.
 	for dbID := range alreadyExpandedDBs {

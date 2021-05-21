@@ -12,7 +12,7 @@ package tree
 
 // CreateChangefeed represents a CREATE CHANGEFEED statement.
 type CreateChangefeed struct {
-	Targets TargetList
+	Targets ChangefeedTargetList
 	SinkURI Expr
 	Options KVOptions
 }
@@ -38,4 +38,32 @@ func (node *CreateChangefeed) Format(ctx *FmtCtx) {
 		ctx.WriteString(" WITH ")
 		ctx.FormatNode(&node.Options)
 	}
+}
+
+// ChangefeedTargetList represents a list of targets.
+type ChangefeedTargetList struct {
+	Tables  TablePatterns
+	Indexes TableIndexNames
+}
+
+// Format implements the NodeFormatter interface.
+func (tl *ChangefeedTargetList) Format(ctx *FmtCtx) {
+	if tl.Indexes != nil {
+		ctx.WriteString("INDEX ")
+		ctx.FormatNode(&tl.Indexes)
+	}
+	if tl.Indexes != nil && tl.Tables != nil {
+		ctx.WriteString(",")
+	}
+	if tl.Tables != nil {
+		ctx.WriteString("TABLE ")
+		ctx.FormatNode(&tl.Tables)
+	}
+}
+
+// Merge adds the targets of tl2 to the receiver in place, and returns the receiver
+func (tl1 ChangefeedTargetList) Merge(tl2 ChangefeedTargetList) ChangefeedTargetList {
+	tl1.Tables = append(tl1.Tables, tl2.Tables...)
+	tl1.Indexes = append(tl1.Indexes, tl2.Indexes...)
+	return tl1
 }

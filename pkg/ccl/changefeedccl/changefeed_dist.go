@@ -10,16 +10,21 @@ package changefeedccl
 
 import (
 	"context"
+	"fmt"
+	"strconv"
+	"strings"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeeddist"
 	"github.com/cockroachdb/cockroach/pkg/jobs/jobspb"
 	"github.com/cockroachdb/cockroach/pkg/kv"
 	"github.com/cockroachdb/cockroach/pkg/roachpb"
 	"github.com/cockroachdb/cockroach/pkg/sql"
+	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descpb"
 	"github.com/cockroachdb/cockroach/pkg/sql/catalog/descs"
 	"github.com/cockroachdb/cockroach/pkg/sql/rowexec"
 	"github.com/cockroachdb/cockroach/pkg/sql/sem/tree"
 	"github.com/cockroachdb/cockroach/pkg/util/hlc"
+	"github.com/cockroachdb/cockroach/pkg/util/log"
 )
 
 func init() {
@@ -104,7 +109,7 @@ func distChangefeedFlow(
 			spansTS = spansTS.Next()
 		}
 		var err error
-		trackedSpans, err = fetchSpansForTargets(ctx, execCfg, details.Targets, spansTS)
+		trackedSpans, err = fetchSpansForTargets(ctx, execCfg, details.Targets, spansTS, details.Opts)
 		if err != nil {
 			return err
 		}
@@ -119,6 +124,7 @@ func fetchSpansForTargets(
 	execCfg *sql.ExecutorConfig,
 	targets jobspb.ChangefeedTargets,
 	ts hlc.Timestamp,
+	opts map[string]string,
 ) ([]roachpb.Span, error) {
 	var spans []roachpb.Span
 	fetchSpans := func(
@@ -127,14 +133,21 @@ func fetchSpansForTargets(
 		spans = nil
 		txn.SetFixedTimestamp(ctx, ts)
 		// Note that all targets are currently guaranteed to be tables.
-		for tableID := range targets {
+		for tableID, stn := range targets {
 			flags := tree.ObjectLookupFlagsWithRequired()
 			flags.AvoidCached = true
 			tableDesc, err := descriptors.GetImmutableTableByID(ctx, txn, tableID, flags)
 			if err != nil {
 				return err
 			}
-			spans = append(spans, tableDesc.PrimaryIndexSpan(execCfg.Codec))
+			if override, ok := opts[fmt.Sprintf("%d:%s", tableID, stn.StatementTimeName)]; ok {
+				log.Infof(ctx, `overrideZ: %v %v`, override, strings.Split(override, `:`))
+				idx, _ := strconv.Atoi(strings.Split(override, `:`)[1])
+				spans = append(spans, tableDesc.IndexSpan(execCfg.Codec, descpb.IndexID(idx)))
+				log.Infof(ctx, `fetching index span for index %i: %v`, idx, spans)
+			} else {
+				spans = append(spans, tableDesc.PrimaryIndexSpan(execCfg.Codec))
+			}
 		}
 		return nil
 	}

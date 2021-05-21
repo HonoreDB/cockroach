@@ -1937,7 +1937,7 @@ opt_sequence_option_list ::=
 	| 
 
 single_table_pattern_list ::=
-	( table_name ) ( ( ',' table_name ) )*
+	( table_or_index_name ) ( ( ',' table_or_index_name ) )*
 
 replication_options_list ::=
 	( replication_options ) ( ( ',' replication_options ) )*
@@ -2382,6 +2382,10 @@ create_as_table_defs ::=
 
 enum_val_list ::=
 	( 'SCONST' ) ( ( ',' 'SCONST' ) )*
+
+table_or_index_name ::=
+	table_name
+	| table_name '@' index_name
 
 replication_options ::=
 	'CURSOR' '=' a_expr

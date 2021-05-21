@@ -419,6 +419,9 @@ func (u *sqlSymUnion) limit() *tree.Limit {
 func (u *sqlSymUnion) targetList() tree.TargetList {
     return u.val.(tree.TargetList)
 }
+func (u *sqlSymUnion) changefeedTargetList() tree.ChangefeedTargetList {
+    return u.val.(tree.ChangefeedTargetList)
+}
 func (u *sqlSymUnion) targetListPtr() *tree.TargetList {
     return u.val.(*tree.TargetList)
 }
@@ -1057,7 +1060,7 @@ func (u *sqlSymUnion) objectNamePrefixList() tree.ObjectNamePrefixList {
 %type <str> cursor_name database_name index_name opt_index_name column_name insert_column_item statistics_name window_name
 %type <str> family_name opt_family_name table_alias_name constraint_name target_name zone_name partition_name collation_name
 %type <str> db_object_name_component
-%type <*tree.UnresolvedObjectName> table_name standalone_index_name sequence_name type_name view_name db_object_name simple_db_object_name complex_db_object_name
+%type <*tree.UnresolvedObjectName> table_name table_or_index_name standalone_index_name sequence_name type_name view_name db_object_name simple_db_object_name complex_db_object_name
 %type <[]*tree.UnresolvedObjectName> type_name_list
 %type <str> schema_name
 %type <tree.ObjectNamePrefix>  qualifiable_schema_name opt_schema_name
@@ -3456,7 +3459,7 @@ create_changefeed_stmt:
   CREATE CHANGEFEED FOR changefeed_targets opt_changefeed_sink opt_with_options
   {
     $$.val = &tree.CreateChangefeed{
-      Targets: $4.targetList(),
+      Targets: $4.changefeedTargetList(),
       SinkURI: $5.expr(),
       Options: $6.kvOptions(),
     }
@@ -3465,7 +3468,7 @@ create_changefeed_stmt:
   {
     /* SKIP DOC */
     $$.val = &tree.CreateChangefeed{
-      Targets: $4.targetList(),
+      Targets: $4.changefeedTargetList(),
       Options: $5.kvOptions(),
     }
   }
@@ -3473,23 +3476,37 @@ create_changefeed_stmt:
 changefeed_targets:
   single_table_pattern_list
   {
-    $$.val = tree.TargetList{Tables: $1.tablePatterns()}
+    $$.val = $1.changefeedTargetList()
   }
 | TABLE single_table_pattern_list
   {
-    $$.val = tree.TargetList{Tables: $2.tablePatterns()}
+    $$.val = $2.changefeedTargetList()
   }
 
 single_table_pattern_list:
-  table_name
+  table_or_index_name
   {
-    $$.val = tree.TablePatterns{$1.unresolvedObjectName().ToUnresolvedName()}
+    $$.val = $1.changefeedTargetList()
   }
-| single_table_pattern_list ',' table_name
+| single_table_pattern_list ',' table_or_index_name
   {
-    $$.val = append($1.tablePatterns(), $3.unresolvedObjectName().ToUnresolvedName())
+    $$.val = $1.changefeedTargetList().Merge($3.changefeedTargetList())
   }
 
+table_or_index_name:
+table_name
+  {
+    $$.val = tree.ChangefeedTargetList{Tables: tree.TablePatterns{$1.unresolvedObjectName().ToUnresolvedName()}}
+  }
+| table_name '@' index_name
+  {
+    name := $1.unresolvedObjectName().ToTableName()
+    index := tree.TableIndexName{
+       Table: name,
+       Index: tree.UnrestrictedName($3),
+    }
+    $$.val = tree.ChangefeedTargetList{Indexes: tree.TableIndexNames{&index}}
+  }
 
 opt_changefeed_sink:
   INTO string_or_placeholder

@@ -173,10 +173,6 @@ func changefeedPlanHook(
 		// For now, disallow targeting a database or wildcard table selection.
 		// Getting it right as tables enter and leave the set over time is
 		// tricky.
-		if len(changefeedStmt.Targets.Databases) > 0 {
-			return errors.Errorf(`CHANGEFEED cannot target %s`,
-				tree.AsString(&changefeedStmt.Targets))
-		}
 		for _, t := range changefeedStmt.Targets.Tables {
 			p, err := t.NormalizeTablePattern()
 			if err != nil {
@@ -189,7 +185,7 @@ func changefeedPlanHook(
 
 		// This grabs table descriptors once to get their ids.
 		targetDescs, _, err := backupresolver.ResolveTargetsToDescriptors(
-			ctx, p, statementTime, &changefeedStmt.Targets)
+			ctx, p, statementTime, &tree.TargetList{Tables: changefeedStmt.Targets.Tables, Indexes: changefeedStmt.Targets.Indexes})
 		if err != nil {
 			err = errors.Wrap(err, "failed to resolve targets in the CHANGEFEED stmt")
 			if !initialHighWater.IsEmpty() {
@@ -207,16 +203,38 @@ func changefeedPlanHook(
 				if err := p.CheckPrivilege(ctx, desc, privilege.SELECT); err != nil {
 					return err
 				}
+
 				_, qualified := opts[changefeedbase.OptFullTableName]
 				name, err := getChangefeedTargetName(ctx, table, *p.ExecCfg(), p.Txn(), qualified)
 				if err != nil {
 					return err
 				}
-				targets[table.GetID()] = jobspb.ChangefeedTarget{
-					StatementTimeName: name,
+
+				// FIXME before merge, fragile and inefficient
+				isIndexTarget := false
+				for _, indexTarget := range changefeedStmt.Targets.Indexes {
+					if table.TableDesc().GetName() == indexTarget.Table.Table() {
+						indexDesc, err := table.FindIndexWithName(string(indexTarget.Index))
+						if err != nil {
+							return errors.Wrap(err, "failed to resolve targets in the CHANGEFEED stmt")
+						}
+
+						stn := name + "@" + indexDesc.GetName()
+						targets[table.GetID()] = jobspb.ChangefeedTarget{
+							StatementTimeName: stn,
+						}
+						isIndexTarget = true
+						opts[fmt.Sprintf("%d:%s", table.GetID(), stn)] = fmt.Sprintf("index:%d", indexDesc.GetID())
+					}
 				}
-				if err := changefeedbase.ValidateTable(targets, table); err != nil {
-					return err
+
+				if !isIndexTarget {
+					targets[table.GetID()] = jobspb.ChangefeedTarget{
+						StatementTimeName: name,
+					}
+					if err := changefeedbase.ValidateTable(targets, table); err != nil {
+						return err
+					}
 				}
 			}
 		}
