@@ -186,3 +186,72 @@ func (c *rowFetcherCache) RowFetcherForTableDesc(
 	c.fetchers[idVer] = &rf
 	return &rf, nil
 }
+
+func (c *rowFetcherCache) RowFetcherForTableDescAndIndex(
+	tableDesc catalog.TableDescriptor,
+	index catalog.Index,
+
+) (*row.Fetcher, error) {
+	idVer := idVersion{id: tableDesc.GetID(), version: tableDesc.GetVersion()}
+	// Ensure that all user defined types are up to date with the cached
+	// version and the desired version to use the cache. It is safe to use
+	// UserDefinedTypeColsHaveSameVersion if we have a hit because we are
+	// guaranteed that the tables have the same version. Additionally, these
+	// fetchers are always initialized with a single tabledesc.Immutable.
+	if rf, ok := c.fetchers[idVer]; ok &&
+		catalog.UserDefinedTypeColsHaveSameVersion(tableDesc, rf.GetTables()[0].(catalog.TableDescriptor)) {
+		return rf, nil
+	}
+	var colIdxMap catalog.TableColMap
+	var valNeededForCol util.FastIntSet
+	colsInIndex := make([]catalog.Column, 0, index.NumColumns())
+
+	// Possibly unsafe assumption here that ForEachColumnID
+	// gives columns in the order they'll appear in the datum
+	i := 0
+	index.ForEachColumnID(func(id descpb.ColumnID) error {
+		col, _ := tableDesc.FindColumnWithID(id)
+		colIdxMap.Set(id, i)
+		valNeededForCol.Add(i)
+		colsInIndex = append(colsInIndex, col)
+		i++
+		return nil
+	})
+
+	if index.GetType() == descpb.IndexDescriptor_INVERTED {
+		id := index.InvertedColumnID()
+		col, _ := tableDesc.FindColumnWithID(id)
+		colIdxMap.Set(id, i)
+		valNeededForCol.Add(i)
+		colsInIndex = append(colsInIndex, col)
+	}
+
+	var rf row.Fetcher
+	rfArgs := row.FetcherTableArgs{
+		Spans:            roachpb.Spans{tableDesc.IndexSpan(c.codec, index.GetID())},
+		Desc:             tableDesc,
+		Index:            index,
+		ColIdxMap:        colIdxMap,
+		IsSecondaryIndex: true,
+		Cols:             colsInIndex,
+		ValNeededForCol:  valNeededForCol,
+	}
+	if err := rf.Init(
+		context.TODO(),
+		c.codec,
+		false, /* reverse */
+		descpb.ScanLockingStrength_FOR_NONE,
+		descpb.ScanLockingWaitPolicy_BLOCK,
+		false, /* isCheck */
+		&c.a,
+		nil, /* memMonitor */
+		rfArgs,
+	); err != nil {
+		return nil, err
+	}
+	// TODO(dan): Bound the size of the cache. Resolved notifications will let
+	// us evict anything for timestamps entirely before the notification. Then
+	// probably an LRU just in case?
+	c.fetchers[idVer] = &rf
+	return &rf, nil
+}

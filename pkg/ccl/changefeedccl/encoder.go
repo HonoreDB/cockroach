@@ -62,6 +62,8 @@ type encodeRow struct {
 	// prevTableDesc is a TableDescriptor for the table containing `prevDatums`.
 	// It's valid for interpreting the row at `updated.Prev()`.
 	prevTableDesc catalog.TableDescriptor
+	// index is the index being watched (usually the primary one)
+	index catalog.Index
 }
 
 // Encoder turns a row into a serialized changefeed key, value, or resolved
@@ -145,18 +147,25 @@ func (e *jsonEncoder) EncodeKey(_ context.Context, row encodeRow) ([]byte, error
 
 func (e *jsonEncoder) encodeKeyRaw(row encodeRow) ([]interface{}, error) {
 	colIdxByID := catalog.ColumnIDToOrdinalMap(row.tableDesc.PublicColumns())
-	primaryIndex := row.tableDesc.GetPrimaryIndex()
-	jsonEntries := make([]interface{}, primaryIndex.NumColumns())
-	for i := 0; i < primaryIndex.NumColumns(); i++ {
-		colID := primaryIndex.GetColumnID(i)
+	index := row.index
+	jsonEntries := make([]interface{}, index.NumColumns())
+	for i := 0; i < index.NumColumns(); i++ {
+		colID := index.GetColumnID(i)
 		idx, ok := colIdxByID.Get(colID)
 		if !ok {
 			return nil, errors.Errorf(`unknown column id: %d`, colID)
 		}
-		datum := row.datums[idx]
-		datum, col := row.datums[idx], row.tableDesc.PublicColumns()[idx]
+		var datum rowenc.EncDatum
+		if index.Primary() {
+			datum = row.datums[idx]
+		} else if index.GetType() == descpb.IndexDescriptor_INVERTED && i == 0 {
+			datum = row.datums[index.NumColumns()]
+		} else {
+			datum = row.datums[i]
+		}
+		col := row.tableDesc.PublicColumns()[idx]
 		if err := datum.EnsureDecoded(col.GetType(), &e.alloc); err != nil {
-			return nil, err
+			return nil, errors.Wrapf(err, `datums %v, i %v, idx %v`, row.datums, i, idx)
 		}
 		var err error
 		jsonEntries[i], err = tree.AsJSON(datum.Datum, time.UTC)
@@ -175,10 +184,31 @@ func (e *jsonEncoder) EncodeValue(_ context.Context, row encodeRow) ([]byte, err
 
 	var after map[string]interface{}
 	if !row.deleted {
-		columns := row.tableDesc.PublicColumns()
+		var columns []catalog.Column
+		if row.index.Primary() {
+			columns = row.tableDesc.PublicColumns()
+		} else {
+			columns = make([]catalog.Column, 0, row.index.NumColumns())
+			err := row.index.ForEachColumnID(func(id descpb.ColumnID) error {
+				col, err := row.tableDesc.FindColumnWithID(id)
+				if err != nil {
+					return err
+				}
+				columns = append(columns, col)
+				return nil
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
 		after = make(map[string]interface{}, len(columns))
 		for i, col := range columns {
-			datum := row.datums[i]
+			var datum rowenc.EncDatum
+			if row.index.GetType() == descpb.IndexDescriptor_INVERTED && i == 0 {
+				datum = row.datums[row.index.NumColumns()]
+			} else {
+				datum = row.datums[i]
+			}
 			if err := datum.EnsureDecoded(col.GetType(), &e.alloc); err != nil {
 				return nil, err
 			}
@@ -192,10 +222,31 @@ func (e *jsonEncoder) EncodeValue(_ context.Context, row encodeRow) ([]byte, err
 
 	var before map[string]interface{}
 	if row.prevDatums != nil && !row.prevDeleted {
-		columns := row.prevTableDesc.PublicColumns()
+		var columns []catalog.Column
+		if row.index.Primary() {
+			columns = row.prevTableDesc.PublicColumns()
+		} else {
+			columns = make([]catalog.Column, 0, row.index.NumColumns())
+			err := row.index.ForEachColumnID(func(id descpb.ColumnID) error {
+				col, err := row.prevTableDesc.FindColumnWithID(id)
+				if err != nil {
+					return err
+				}
+				columns = append(columns, col)
+				return nil
+			})
+			if err != nil {
+				return nil, err
+			}
+		}
 		before = make(map[string]interface{}, len(columns))
 		for i, col := range columns {
-			datum := row.prevDatums[i]
+			var datum rowenc.EncDatum
+			if row.index.GetType() == descpb.IndexDescriptor_INVERTED && i == 0 {
+				datum = row.prevDatums[row.index.NumColumns()]
+			} else {
+				datum = row.prevDatums[i]
+			}
 			if err := datum.EnsureDecoded(col.GetType(), &e.alloc); err != nil {
 				return nil, err
 			}

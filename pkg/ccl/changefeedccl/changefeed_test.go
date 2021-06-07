@@ -29,6 +29,7 @@ import (
 	"github.com/cockroachdb/cockroach/pkg/base"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/cdctest"
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
+
 	// Imported to allow multi-tenant tests
 	_ "github.com/cockroachdb/cockroach/pkg/ccl/kvccl/kvtenantccl"
 	// Imported to allow locality-related table mutations
@@ -3746,4 +3747,64 @@ func TestChangefeedPrimaryKeyChangeMixedVersion(t *testing.T) {
 	t.Run("enterprise", enterpriseTestWithServerArgs(setMixedVersion, testFn))
 	t.Run("cloudstorage", cloudStorageTestWithServerArg(setMixedVersion, testFn))
 	t.Run("kafka", kafkaTestWithServerArgs(setMixedVersion, testFn))
+}
+
+func TestChangefeedSecondaryIndex(t *testing.T) {
+	defer leaktest.AfterTest(t)()
+	defer log.Scope(t).Close(t)
+
+	defer jobs.TestingSetAdoptAndCancelIntervals(10*time.Millisecond, 10*time.Millisecond)()
+
+	testFn := func(t *testing.T, db *gosql.DB, f cdctest.TestFeedFactory) {
+		sqlDB := sqlutils.MakeSQLRunner(db)
+		sqlDB.Exec(t, `CREATE TABLE t (a INT PRIMARY KEY, b STRING, c STRING, d INT)`)
+		sqlDB.Exec(t, `INSERT INTO t VALUES (1, 'a', 'x', 0), (2, 'a', 'y', 0), (3, 'b', 'x', 1)`)
+
+		sqlDB.Exec(t, `CREATE UNIQUE INDEX compound_unique ON t(c,b)`)
+		sqlDB.Exec(t, `CREATE INDEX partial ON t(a) where d>0`)
+		sqlDB.Exec(t, `CREATE INDEX non_unique ON t(b)`)
+		sqlDB.Exec(t, `CREATE INDEX only_b ON t(a) STORING (b)`)
+
+		key_only := feed(t, f, `CREATE CHANGEFEED FOR t@compound_unique WITH envelope=key_only`)
+		defer closeFeed(t, key_only)
+
+		assertPayloads(t, key_only, []string{
+			`t: ["x", "a"]->`,
+			`t: ["y", "a"]->`,
+			`t: ["x", "b"]->`,
+		})
+
+		partial := feed(t, f, `CREATE CHANGEFEED FOR t@partial WITH envelope=key_only`)
+		defer closeFeed(t, partial)
+
+		assertPayloads(t, partial, []string{
+			`t: [3]->`,
+		})
+
+		non_unique := feed(t, f, `CREATE CHANGEFEED FOR t@non_unique`)
+		defer closeFeed(t, non_unique)
+
+		assertPayloads(t, non_unique, []string{
+			`t: ["a"]->{"after": {"a": 1, "b": "a"}}`,
+			`t: ["a"]->{"after": {"a": 2, "b": "a"}}`,
+			`t: ["b"]->{"after": {"a": 3, "b": "b"}}`,
+		})
+
+		only_b := feed(t, f, `CREATE CHANGEFEED FOR t@only_b`)
+		defer closeFeed(t, only_b)
+
+		assertPayloads(t, only_b, []string{
+			`t: [1]->{"after": {"a": 1, "b": "a"}}`,
+			`t: [2]->{"after": {"a": 2, "b": "a"}}`,
+			`t: [3]->{"after": {"a": 3, "b": "b"}}`,
+		})
+
+	}
+
+	t.Run(`sinkless`, sinklessTest(testFn))
+
+	// Test helpers hit a parse error
+	//t.Run(`enterprise`, enterpriseTest(testFn))
+	//t.Run(`cloudstorage`, cloudStorageTest(testFn))
+	//t.Run(`kafka`, kafkaTest(testFn))
 }

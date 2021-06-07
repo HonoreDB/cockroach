@@ -11,6 +11,8 @@ package changefeedccl
 import (
 	"context"
 	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/cockroachdb/cockroach/pkg/ccl/changefeedccl/changefeedbase"
@@ -734,7 +736,8 @@ func (c *kvEventToRowConsumer) eventToRow(
 		return r, err
 	}
 
-	if _, ok := c.details.Targets[desc.GetID()]; !ok {
+	target, ok := c.details.Targets[desc.GetID()]
+	if !ok {
 		// This kv is for an interleaved table that we're not watching.
 		if log.V(3) {
 			log.Infof(ctx, `skipping key from unwatched table %s: %s`, desc.GetName(), event.KV().Key)
@@ -742,7 +745,15 @@ func (c *kvEventToRowConsumer) eventToRow(
 		return r, nil
 	}
 
-	rf, err := c.rfCache.RowFetcherForTableDesc(desc)
+	var rf *row.Fetcher
+	if override, ok := c.details.Opts[fmt.Sprintf("%d:%s", desc.GetID(), target.StatementTimeName)]; ok {
+		idx, _ := strconv.Atoi(strings.Split(override, `:`)[1])
+		idxDesc, _ := desc.FindIndexWithID(descpb.IndexID(idx))
+		rf, err = c.rfCache.RowFetcherForTableDescAndIndex(desc, idxDesc)
+	} else {
+		rf, err = c.rfCache.RowFetcherForTableDesc(desc)
+	}
+
 	if err != nil {
 		return r, err
 	}
@@ -756,7 +767,7 @@ func (c *kvEventToRowConsumer) eventToRow(
 		return r, err
 	}
 
-	r.datums, r.tableDesc, _, err = rf.NextRow(ctx)
+	r.datums, r.tableDesc, r.index, err = rf.NextRow(ctx)
 	if err != nil {
 		return r, err
 	}
@@ -770,7 +781,7 @@ func (c *kvEventToRowConsumer) eventToRow(
 	// Assert that we don't get a second row from the row.Fetcher. We
 	// fed it a single KV, so that would be surprising.
 	var nextRow encodeRow
-	nextRow.datums, nextRow.tableDesc, _, err = rf.NextRow(ctx)
+	nextRow.datums, nextRow.tableDesc, nextRow.index, err = rf.NextRow(ctx)
 	if err != nil {
 		return r, err
 	}
@@ -805,7 +816,7 @@ func (c *kvEventToRowConsumer) eventToRow(
 		if err := prevRF.StartScanFrom(ctx, &c.kvFetcher); err != nil {
 			return r, err
 		}
-		r.prevDatums, r.prevTableDesc, _, err = prevRF.NextRow(ctx)
+		r.prevDatums, r.prevTableDesc, nextRow.index, err = prevRF.NextRow(ctx)
 		if err != nil {
 			return r, err
 		}
@@ -818,7 +829,7 @@ func (c *kvEventToRowConsumer) eventToRow(
 		// Assert that we don't get a second row from the row.Fetcher. We
 		// fed it a single KV, so that would be surprising.
 		var nextRow encodeRow
-		nextRow.prevDatums, nextRow.prevTableDesc, _, err = prevRF.NextRow(ctx)
+		nextRow.prevDatums, nextRow.prevTableDesc, nextRow.index, err = prevRF.NextRow(ctx)
 		if err != nil {
 			return r, err
 		}
